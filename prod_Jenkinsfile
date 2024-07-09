@@ -1,0 +1,89 @@
+@Library('utils@master') _
+import com.lmig.intl.cloud.jenkins.util.EnvConfigUtil
+
+node('linux') {
+
+  def envUtil = new EnvConfigUtil()
+  countryParams = envUtil.getCountryEnvDetails(env.JOB_NAME)
+  def appEnv = countryParams.countryEnv.toLowerCase()
+
+  def stackName = "intl-co-oficinalinea-cfn-${appEnv}-infrafront-plt"
+  def s3Bucket = "intl-co-oficinalinea-s3-${appEnv}-appwebbucket-v2"
+  def s3Docs = "intl-co-oficinalinea-s3-${appEnv}-storage-docs"
+  def trouxUid = "3D243AAC-579D-4FE3-8A01-FE6735BDD836"
+  def zipName = "ms-oficina-linea-${appEnv}-infrafront-plt.zip"
+  def ZIP_ARTIFACT = "${stackName}.zip"
+  def folderName = "front-v2-${appEnv}"
+
+  def AppCountry = countryParams.countryCode
+  def region = 'us-east-1'
+
+
+  stage("Echo variables") {
+  	script {
+      echo "Working in env........................: ${appEnv}"
+      echo "StackName.............................: ${stackName}"
+      echo "TrouxUid..............................: ${trouxUid}"
+      echo "Region................................: ${region}"
+      echo "Country:..............................: ${AppCountry}"
+  	}
+  }
+	
+  stage('UnZip Files from Artifactory') {
+    sh "mkdir ${folderName}"
+    sh "mv ${ZIP_ARTIFACT} ${folderName}"
+    sh "cd ${folderName} && unzip -o ${ZIP_ARTIFACT}"
+	}
+  
+  stage('Prod Deploy'){
+    deployToProd{
+      withAWS(credentials:getAWSCredentialID(environment:"${appEnv}"), region:"${region}") {
+        sh "aws s3 --region us-east-1 cp --recursive src/Assets/Docs/ s3://${s3Docs}/attachments/ "
+        sh "aws s3 sync ${folderName} s3://${s3Bucket} --delete"
+        sh "aws cloudformation describe-stack-resources --stack-name  ${stackName} --query 'StackResources[0].PhysicalResourceId' --output text > queryCloudFormation.txt"
+      }
+    }
+  }
+
+  stage('Invalidate Cache') {
+    deployToDev {
+      withAWS(credentials:getAWSCredentialID(environment:"${appEnv}"), region:"${region}") {
+        def cloudFrontID = readFile file: 'queryCloudFormation.txt'
+				cloudFrontID = cloudFrontID.trim()
+        sh "aws cloudfront create-invalidation --distribution-id ${cloudFrontID} --paths " + '"/*"'
+        sh "aws cloudfront list-invalidations --distribution-id ${cloudFrontID} --query 'InvalidationList.Items[0].Id' --output text > queryCloudFront.txt"
+        def idInvalidationCache = readFile file: 'queryCloudFront.txt'
+        idInvalidationCache = idInvalidationCache.trim()
+        // sh "aws cloudfront wait invalidation-completed --distribution-id ${cloudFrontID} --id ${idInvalidationCache}"
+      }
+    }
+  }
+
+  stage('Clean Deploy Folder') {
+    sh "rm -rf ${folderName}"
+  }
+
+  stage('Post Actions') {
+    def from = 'noreply-cdp@libertymutual.com'
+    def to = 'b6a2086a.LibertyMutual.onmicrosoft.com@amer.teams.ms'
+    def subject = "${appEnv} FrontEnd v2 Deployment: ${currentBuild.fullDisplayName}"
+    def body = """
+                Cordial saludo,
+
+                Se adjunta los resultados obtenidos del job: ${env.JOB_BASE_NAME}
+
+                Pipeline Status: ${currentBuild.result}
+                Build Job URL: ${env.BUILD_URL}
+                Build No: ${env.BUILD_ID}
+                """
+
+    mail(
+      to: to,
+      from: from,
+      subject: subject,
+      body: body
+		)
+	}
+}
+
+
