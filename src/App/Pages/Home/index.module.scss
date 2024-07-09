@@ -1,0 +1,16 @@
+.renovationLink {
+	margin-left: 4px;
+	color: #06748c;
+	text-decoration: underline;
+
+	&:visited {
+		color: #06748c;
+	}
+}
+
+@media (max-width: 960px) {
+	.renovationLink {
+		display: block;
+		font-weight: 400 !important;
+	}
+}
